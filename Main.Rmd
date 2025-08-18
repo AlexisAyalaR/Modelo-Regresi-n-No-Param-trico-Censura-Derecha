@@ -1,0 +1,603 @@
+---
+title: "Replicación de resultados (I/II) - Tesis Alexis Ayala"
+output: html_document
+date: "Agosto 2025"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r,warning=FALSE,message=FALSE}
+# Paquetes
+
+library(ggplot2)
+library(ks)
+library(dplyr)
+library(dslabs)
+library(stats)
+library(kedd)
+
+```
+
+
+
+
+El objetivo del presente código es generar todos los resultados presentados en los capítulos 2, 3 y 4 de la tésis Aplicación de un Modelo de Regresión no Paramétrico para Datos Censurados por la Derecha. Específicamente, esta tesis presenta la aplicación de la estimación de la función de regresion para covariables consierando:
+
+  - Pesos Nadaraya-Watson,
+  - Estimador de Kaplan-Meier,
+  - Datos simlados,
+  - Censura por la derecha.
+  
+Comenzamos presentando conceptos básicos de estadística no paramétrica:
+
+```{r}
+
+# Importamos todas las funciones creadas
+source("Funciones.R")
+
+# Usamos un ejemplo de Iris para mostrar datos que tienden a comportarse de forma no intuitiva.
+head(iris)
+
+# Generamos un plot de los tamaños 
+ggplot(iris, aes(x = Sepal.Length)) +
+  geom_histogram(position = "identity", alpha = 0.8, fill = "#036400", color = "grey") +
+  theme_minimal() +
+  labs(
+    x = "Tamaño del Sépalo (cm)",
+    y = "Frecuencia"
+  )
+
+
+```
+
+### Estimación de Densidad de Kernel (KDE):
+$$\hat{f}(x) = \frac{1}{n\cdot h} \sum_{i=1}^{n} K\left( \frac{x-X_i}{h}\right)$$
+
+Para ello definimos diferentes funciones kernel $K$ y anchos de banda $h$:
+
+```{r}
+
+# ------------------------------------------
+# Plots Ejemplos:  Multiples Kernels
+# ------------------------------------------
+
+u = seq(-2,2, 0.001)
+
+# Realizamos un plot con multiples kernels
+dataKern <- data.frame(u = u, 
+                      y = c(trianKernel(u), gausKernel(matrix(u)), epaneKernel(u), uKernel(u)),
+                      Kernels = factor(rep(c("Triangular", "Gaussiano", "Epanechnikov", "Uniforme"), each = length(u))))
+
+# Hacemos el plot
+ggplot(data = dataKern, aes(x = u, y = y, color = Kernels)) +
+  geom_line(aes(linetype = Kernels), linewidth = 1) +
+  scale_color_manual(values = c("#adc178", "#a98467", "#6c584c", "#526a40")) +
+  scale_linetype_manual(values = c("solid", "dotted", "twodash", "dashed")) +
+  labs(x = "",
+       y = "Densidad") + 
+  theme_set(theme_bw() + theme(legend.position = 'bottom'))
+
+#Borramos variables que ya no se usarán
+rm(u)
+
+# ------------------------------------------
+# Plots Ejemplos:  Multiples Anchos Banda
+# ------------------------------------------
+
+x <- 0
+u <- seq(-10,10, 0.01)
+
+# Generemos el KDE
+h <- c(0.2, 0.5, 1, 2, 4)
+dataK <- data.frame(row.names = 1:length(u))
+
+for (i in 1:length(h)) {
+  k <- gausKernel( matrix((x - u) / h[i]) )
+  dataK[[paste0("K", i)]] <- k
+}
+
+data <- data.frame(x = u,
+                   y = c(dataK$K1, dataK$K2, dataK$K3, dataK$K4, dataK$K5),
+                   Ancho_Banda = factor(rep(c("h = 0.2", "h = 0.5", "h = 1", "h = 2", "h = 4"), each = length(u)))
+)
+  
+ggplot(data = data, aes(x = x, y = y, color = Ancho_Banda)) +
+  geom_line(aes(linetype = Ancho_Banda), linewidth = 1) +
+  scale_color_manual(values = c("#036757", "#f0cf16", "#ef7110", "#e23030", "#1d4d9c")) +
+  #scale_linetype_manual(values = c("solid", "dotted", "twodash", "dashed", "")) +
+  labs(x = "",
+       y = "Densidad") + 
+  theme_set(theme_bw() + theme(legend.position = 'bottom'))
+
+#Borramos variables que ya no se usarán
+rm(u, x, k, i, h, data, dataK)
+
+# ------------------------------------------
+# Ejemplo: KDE
+# ------------------------------------------
+
+set.seed(1)
+
+# Generamos un ejemplo de regresión
+x <- seq(0.01, 10, 0.01)
+n <- length(x)
+data <- matrix(rnorm(n,5,1))
+
+# Estimamos KDE gausiano
+KDE <- sapply(x, function(x0) {
+  calculaKDE(x0, gausKernel, 0.25, data)
+})
+kde <- density(data)
+dfKDEG <- data.frame(x, KDE, Distribución = "Estimación KDE Gaussiano")
+
+# Estimamos KDE uniforme
+KDE <- sapply(x, function(x0) {
+  calculaKDE(x0, uKernel, 3, data)
+})
+
+kde <- density(data)
+dfKDEU <- data.frame(x, KDE, Distribución = "Estimación KDE Uniforme")
+
+# Generamos la densidad verdadera
+teor <- dnorm(x, mean = 5, sd = 1)
+dfTeor <- data.frame(x, teor, Distribución = "Distribución real")
+
+ggplot() +
+  geom_line(data = dfKDEG, aes(x = x, y = KDE, color = "Estimación KDE Gaussiano", linetype = "Estimación KDE Gaussiano"), linewidth = 1.2) +
+  geom_line(data = dfKDEU, aes(x = x, y = KDE, color = "Estimación KDE Uniforme", linetype = "Estimación KDE Uniforme"), linewidth = 1.2) +
+  geom_line(data = dfTeor, aes(x = x, y = teor, color = "Distribución real", linetype = "Distribución real"), linewidth = 1.2) +
+  labs(x = "x",
+       y = "Función densidad"
+  ) +
+  scale_color_manual(values = c("Estimación KDE Gaussiano" = "#6697E8", "Estimación KDE Uniforme" = "#702963", "Distribución real" = "#F5A9BB")) +
+  scale_linetype_manual(values = c("Estimación KDE Gaussiano" = "solid", "Estimación KDE Uniforme" = "dashed", "Distribución real" = "twodash")) +  
+  labs(color = "Distribución", linetype = "Distribución") +
+  theme_set(theme_bw() + theme(legend.position = 'bottom'))
+
+```
+
+### Estimador de Nadaraya-Watson:
+
+$$\mathbb{E}(Y | X=x) = \sum_{i=1}^{n} W_{in}(x) \cdot Y_i$$
+donde, $W_{in}(x) = \frac{K\left( \frac{x-X_i}{h}\right)}{\sum_{i=1}^{n} K\left( \frac{x-X_i}{h}\right)}$
+
+El algoritmo se divide en dos partes: 
+
+1) La estimación de los pesos $W_{in}(x)$.
+2) La multiplicación de los pesos con los valores observados.
+
+```{r}
+
+# --------------------------------------------
+# Ejemplo: Aplicación de Nadaraya-Watson
+# --------------------------------------------
+
+set.seed(1)
+
+# Generamos un ejemplo de regresión
+n <- 100
+X <- matrix(seq(0, 8, length.out = n))
+yT <- sin(X)
+yE <- yT + rnorm(n, 0, 0.1)
+
+# Poenmos todos los valores en un DF
+dfplot <- data.frame(X, yT, yE)
+
+# Generamos un plot inicial
+ggplot() +
+  geom_line(data = dfplot, aes(x = X, y = yT, color = "Curva verdadera", linetype = "Curva verdadera"), linewidth = 1) +
+  geom_point(data = dfplot, aes(x = X, y = yE), size = 1, alpha = 0.75) +
+  labs(x = "X",
+       y = "Y"
+  ) +
+  scale_color_manual(values = c("Curva verdadera" = "#6697E8")) +
+  scale_linetype_manual(values = c("Curva verdadera" = "solid")) +  
+  labs(color = "Funciones", linetype = "Funciones") +
+  theme_set(theme_bw() + theme(legend.position = 'bottom'))
+
+# Generamos el ejemplo
+x0 <- seq(0, 8, length.out = n)
+
+# Ancho de banda Silverman
+estSilv = sapply(x0, function(x0) {
+  W(x0, X, silverman(yE))
+})
+dfplot$resSi <- nadarayaWatson(estSilv, yE)
+
+# Ancho de banda hAMISE
+estAM = sapply(x0, function(x0) {
+  W(x0, X, bw.SJ(yE))
+})
+dfplot$resAM <- nadarayaWatson(estAM, yE)
+
+# Ancho de banda CrossValidation
+h <- h.ucv(yE[,1], kernel = "gaussian")$h
+estCV = sapply(x0, function(x0) {
+  W(x0, X, h)
+})
+dfplot$resCV <- nadarayaWatson(estCV, yE)
+
+# Plotteamos la estimación
+p <- ggplot(dfplot) +
+  geom_line(aes(x = X, y = yT, color = "Curva verdadera", linetype = "Curva verdadera"), linewidth = 1) +
+  geom_line(aes(x = X, y = resSi, color = "h = Silverman", linetype = "h = Silverman"), linewidth = 1.5, alpha = 1.5) +
+  geom_line(aes(x = X, y = resAM, color = "h = hAMISE", linetype = "h = hAMISE"), linewidth = 1.5, alpha = 1.5) +
+  geom_line(aes(x = X, y = resCV, color = "h = ValidCruz", linetype = "h = ValidCruz"), linewidth = 1.5, alpha = 1.5) +
+  geom_point(aes(x = X, y = yE), color = "black", size = 0.8, alpha = 0.75) +
+  labs(x = "X",
+       y = "Y"
+  ) +
+  scale_color_manual(values = c("Curva verdadera" = "#6697E8", "h = Silverman" = "#F5A9BB", "h = hAMISE" = "#BF7FFF", "h = ValidCruz" = "#85B258")) +
+  scale_linetype_manual(values = c("Curva verdadera" = "solid", "h = Silverman" = "twodash", "h = hAMISE" = "longdash", "h = ValidCruz" = "dotdash")) +  
+  labs(color = "Funciones", linetype = "Funciones") +
+  theme_set(theme_bw() + theme(legend.position = 'bottom'))
+
+p
+
+# Hacemos un zoom-in en el plot
+p + coord_cartesian(xlim = c(3, 4), ylim = c(-0.9, 0.2))
+
+# Borramos datos que ya no usamos
+rm(dfplot, x0, p, n, X, h, yE, yT, estAM, estCV, estSilv)
+
+```
+
+### Estimador de Kaplan-Meier:
+
+$$ \hat{S}(t) = \prod_{j: t_j \leq t} \left({1 - \frac{d_j}{n_j}} \right)$$
+El algoritmo se divide en dos partes: 
+
+1) La estimación de la función de Supervivencia.
+2) La estimación de $S$ dado un tiempo $t_0$.
+
+```{r}
+
+# --------------------------------------------
+# Ejemplo: Aplicación de Kaplan-Meier
+# --------------------------------------------
+
+# Definimos los datos
+tiempo <- c(8, 8, 8, 10, 10, 12, 13, 14, 15, 16)
+censura <- c(1, 1, 1, 1,  1,  0,  1,  0,  0,  1)
+
+# Generamos el estimador
+KMEst <- KM(tiempo,censura)
+
+# Aplicamos Kaplan Meier para toda t en el intervalo, considerando intervalos al 95%
+ICsurv95 <- lapply(tiempo, function(T) {
+  KMT0CI(KMEst, T, 0.05)
+})
+
+# Aplicamos Kaplan Meier para toda t en el intervalo, considerando intervalos al 99%
+ICsurv99 <- lapply(tiempo, function(T) {
+  KMT0CI(KMEst, T, 0.01)
+})
+
+# Creamos dataframes
+IC95 <- do.call(rbind, ICsurv95)
+IC99 <- do.call(rbind, ICsurv99)
+res <- data.frame(t = tiempo,
+                  S = IC95$prob,
+                  
+                  # Intervalos
+                  Up95 = IC95$up,
+                  Down95 = IC95$down,
+                  Up99 = IC99$up,
+                  Down99 = IC99$down,
+                  
+                  # Intervalos con Log-Exp
+                  Up95Log = IC95$upLog,
+                  Down95Log = IC95$downLog,
+                  Up99Log = IC99$upLog,
+                  Down99Log = IC99$downLog
+                  )
+
+# Gráfica con intervalos LogExp
+ggplot(data = res, aes(x = t)) +
+  geom_step(aes(y = S, color = "Estimador KM"), alpha = 0.7, linewidth = 2) +
+  geom_ribbon(aes(ymin = Down99Log, ymax = Up99Log, fill = "IC 95%"), alpha = 0.15) +
+  geom_ribbon(aes(ymin = Down95Log, ymax = Up95Log, fill ="IC 99%"), alpha = 0.20) +
+  labs(x = "Tiempo",
+       y = "Probabilidad de supervivencia"
+  ) +
+  scale_color_manual(
+    values = c("Estimador KM" = "#bb54c4"),
+    label = c("Estimador KM" = "Estimador KM")
+                     ) +
+  scale_fill_manual(
+    values = c("IC 95%" = "#bb54c4", "IC 99%" = "#bb54c4"),
+    label = c("IC 95%" = "IC LogExp 95%", "IC 99%" = "IC LogExp 99%")
+  ) +
+  labs(color = "", fill = "") +
+  theme_set(theme_bw() + theme(legend.position = 'bottom')) +
+  coord_cartesian(ylim = c(-0.1, 1.1)) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.2)) +
+  guides(
+    color = guide_legend(ncol = 1, byrow = FALSE),
+    fill  = guide_legend(ncol = 1, byrow = FALSE)
+  )
+
+# Gráfica con intervalos normales
+ggplot(data = res, aes(x = t)) +
+  geom_step(aes(y = S, color = "Estimador KM"), alpha = 0.7, linewidth = 2) +
+  geom_ribbon(aes(ymin = Down99, ymax = Up99, fill = "IC 95%"), alpha = 0.15) +
+  geom_ribbon(aes(ymin = Down95, ymax = Up95, fill ="IC 99%"), alpha = 0.20) +
+  labs(x = "Tiempo",
+       y = "Probabilidad de supervivencia"
+  ) +
+  scale_color_manual(
+    values = c("Estimador KM" = "#545dc4"),
+    label = c("Estimador KM" = "Estimador KM")
+  ) +
+  scale_fill_manual(
+    values = c("IC 95%" = "#545dc4", "IC 99%" = "#545dc4"),
+    label = c("IC 95%" = "IC 95%", "IC 99%" = "IC 99%")
+  ) +
+  labs(color = "", fill = "") +
+  theme_set(theme_bw() + theme(legend.position = 'bottom')) +
+  coord_cartesian(ylim = c(-0.1, 1.1)) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.2)) +
+  guides(
+    color = guide_legend(ncol = 1, byrow = FALSE),
+    fill  = guide_legend(ncol = 1, byrow = FALSE)
+  )
+
+
+
+```
+
+
+
+### Estimador de Guessoum:
+
+$$\hat{r}_n(x) = \sum_{i=1}^{n} W_{in}(x) \frac{\delta_i \cdot T_i}{\bar{G_n}(T_i)}$$
+
+donde, $W$ es la función de pesos de Nadaraya-Watson y $\bar{G_n}$ es el estimador Kaplan-Meier. En esta sección también se calculan los intervalos de confianza del estimador generados por dos algoritmos:
+
+1) Los intervalos de confianza teóricos.
+2) Los intervalos de confianza generados por medio de Bootstrap.
+
+```{r}
+
+linea <- function(x) { 
+  2*x - 1 
+}
+
+dn1 <- aplicacionGuessoum(50, linea, 0.2)
+dn2 <- aplicacionGuessoum(100, linea, 0.2)
+dn3 <- aplicacionGuessoum(500, linea, 0.2)
+
+dn1$est2 <- dn2$est
+dn1$est3 <- dn3$est
+
+# Plot
+ggplot(dn1, aes(x = x)) +
+  geom_line(aes(y =    y, colour = "Función Verdadera"), linetype = "solid", linewidth = 0.8, alpha = 0.7) +
+  geom_line(aes(y =  est, colour = "n = 50"), linetype = "dotted", linewidth = 1.2) +
+  geom_line(aes(y = est2, colour = "n = 100"), linetype = "dashed", linewidth = 1.2) +
+  geom_line(aes(y = est3, colour = "n = 500"), linetype = "dotdash", linewidth = 1.2) +
+  labs(
+    x = "X",
+    y = "Y"
+  ) +
+    scale_colour_manual(name = "Funciones",
+      values = c("Función Verdadera" = "black", 
+                                  "n = 50" = "#1756D5", 
+                                  "n = 100" = "#9483C1", 
+                                  "n = 500" = "#6aa84f")) +
+  scale_x_continuous(limits = c(0,1)) +
+  scale_y_continuous(limits = c(-1,1)) +
+  theme_set(theme_bw()+ theme(legend.position = 'bottom')) 
+
+
+# Veamos la censura en n = 100 y n = 500
+
+# Plot 1, n = 100
+set.seed(1)
+n <- 100
+X1 <- matrix(runif(n, min = 0, max = 1))
+C1 <- rnorm(n)
+Y1 <- linea(X1) + 0.2 * rnorm(n)
+delta1 <- factor(as.numeric(Y1 <= C1) , labels = c("Censurado", "Observado"))
+
+cens1 <- data.frame(x = X1,
+                    y = Y1,
+                    d = delta1
+                    )
+
+ggplot() +
+  geom_line(data = cens1, aes(x = x, y = linea(x), linetype = "Función verdadera"), color = "black", size = 0.8, alpha = 0.7) +  
+  geom_line(data = dn1, aes(x = x, y = est2, linetype = "Guessoum-Saïd n = 100"), colour = "#9483C1", size = 1.2) +
+  geom_point(data = cens1, aes(x = x, y = y, shape = d, color = d), size = 2) +
+  scale_shape_manual(values = c("Censurado" = 1, "Observado" = 4)) +
+  scale_color_manual(values = c("Censurado" = "#e53265", "Observado" = "#3265e5")) +
+  scale_linetype_manual(name = "Funciones", values = c("Función verdadera" = "solid", "Guessoum-Saïd n = 100" = "dotdash")) +
+  theme_minimal() +
+  labs(x = "X",
+       y = "Y",
+       shape = "Datos",
+       color = "Datos") +
+  scale_x_continuous(limits = c(0,1)) +
+  scale_y_continuous(limits = c(-1,1)) +
+  theme_bw() +
+  theme(legend.position = "bottom", legend.box = "vertical", legend.box.just = "center") 
+
+
+# Plot 2, n = 500
+
+set.seed(1)
+n <- 500
+X2 <- matrix(runif(n, min = 0, max = 1))
+C2 <- rnorm(n)
+Y2 <- linea(X2) + 0.2 * rnorm(n)
+delta2 <- factor(as.numeric(Y2 <= C2) , labels = c("Censurado", "Observado"))
+
+cens2 <- data.frame(x = X2,
+                    y = Y2,
+                    d = delta2
+                    )
+
+ggplot() +
+  geom_line(data = cens2, aes(x = x, y = linea(x), linetype = "Función verdadera"), color = "black", size = 0.8, alpha = 0.7) +  
+  geom_line(data = dn1, aes(x = x, y = est3, linetype = "Guessoum-Saïd n = 500"), colour = "#6aa84f", size = 1.2) +
+  geom_point(data = cens2, aes(x = x, y = y, shape = d, color = d), size = 2) +
+  scale_linetype_manual(name = "Funciones", 
+                        values = c("Función verdadera" = "solid", "Guessoum-Saïd n = 500" = "dotdash"),
+                        guide = guide_legend(order = 1)) +
+  scale_shape_manual(values = c("Censurado" = 1, "Observado" = 4)) +
+  scale_color_manual(values = c("Censurado" = "#e53265", "Observado" = "#3265e5")) +
+  theme_minimal() +
+  labs(x = "X",
+       y = "Y",
+       shape = "Datos",
+       color = "Datos") +
+  scale_x_continuous(limits = c(0,1)) +
+  scale_y_continuous(limits = c(-1,1)) +
+  theme_bw() +
+  theme(legend.position = "bottom", legend.box = "vertical", legend.box.just = "center") 
+
+
+# Intervalos teóricos
+
+cuad <- function(x) { 
+  2*x^3 
+}
+
+set.seed(1)
+n <- 100
+#Generamos los datos
+X <- matrix(runif(n, min = 0, max = 1))
+e <- rnorm(n)
+Y <- cuad(X) + 0.2 * e
+C <- rnorm(n)
+T <- pmin(Y, C)
+delta <- as.numeric(Y <= C)
+h <- h.ucv(X[,1], kernel = "gaussian")$h
+alpha <- 0.05
+
+# Definimos eje
+x0 <- seq(0, 1, length.out = 500)
+
+# Generamos el estimador con intervalos
+options(warn = -1)
+ICLista <- lapply(x0, function(x0) {
+  guessoumCI(x0, X, T, delta, h, alpha)
+})
+
+IC <- do.call(rbind, ICLista)
+
+# Guardamos los datos
+res <- data.frame(x = x0,
+                  y = cuad(x0),
+                  est = IC$Est,
+                  ICIzq = IC$Izq,
+                  ICDer = IC$Der
+)
+
+
+# Plot
+ggplot(res, aes(x = x)) +
+  geom_line(aes(y =     y, colour = "Función Verdadera"), linetype = "solid", size = 0.8) +
+  geom_line(aes(y =   est, colour = "Estimador Guessoum-Saïd"), linetype = "dotdash", size = 1.2) +
+  geom_ribbon(aes(ymin = ICIzq, ymax = ICDer, fill = "Intervalo de confianza"), colour = NA, show.legend = FALSE, linetype = "dashed", alpha = 0.25) +
+  labs(
+    x = "X",
+    y = "Y"
+  ) +
+  scale_colour_manual(name = "Funciones",
+                      values = c("Función Verdadera" = "black", 
+                                 "Estimador Guessoum-Saïd" = "#1756D5")) +
+  scale_fill_manual(name = "",
+    values = c("Intervalo de confianza" = "gray20"),
+    guide  = guide_legend(override.aes = list(linetype = 0, alpha    = 0.25))) +
+  scale_x_continuous(limits = c(0,1)) +
+  scale_y_continuous(limits = c(-0.5,1.5)) +
+  theme_set(theme_bw()+ theme(legend.position = 'bottom')) 
+
+# Intervalos Bootstrap
+set.seed(4)
+
+seno <- function(x) { 
+  sin(x) 
+}
+
+#Generamos los datos
+n <- 100
+X <- matrix(runif(n, min = 0, max = 5))
+e <- rnorm(n)
+Y <- seno(X) + 0.2 * e
+C <- rnorm(n)
+T <- pmin(Y, C)
+delta <- as.numeric(Y <= C)
+h <- h.ucv(X[,1], kernel = "gaussian")$h
+
+# Definimos eje
+x0 <- seq(0, 5, length.out = 500)
+
+# Generamos el estimador
+IC <- lapply(x0, function(x0) {
+  bootstrapCI(x0, X, T, delta, 0.5, 100)
+})
+
+IC <- do.call(rbind, IC)
+
+ICTeo <- lapply(x0, function(x0) {
+  guessoumCI(x0, X, T, delta, 0.5, 0.05)
+})
+
+ICTeo <- do.call(rbind, ICTeo)
+
+# Guardamos los datos
+res <- data.frame(x = x0,
+                  y = seno(x0),
+                  est = ICTeo$Est,
+                  ICIzq = stats::loess(IC$Low ~ x0, span = 0.3)$fitted,
+                  ICDer = stats::loess(IC$Up ~ x0, span = 0.3)$fitted,
+                  ICIzqTeo = ICTeo$Izq,
+                  ICDerTeo = ICTeo$Der
+                  
+)
+
+ggplot(res, aes(x = x)) +
+  geom_line(aes(y =     y, colour = "Función Verdadera"), linetype = "solid", size = 0.8) +
+  geom_line(aes(y =   est, colour = "Estimador Guessoum-Saïd"), linetype = "dotdash", size = 1.2) +
+  geom_ribbon(aes(ymin = ICIzqTeo, ymax = ICDerTeo, fill = "IC Teorico"), linetype = "dashed", alpha = 0.25) +
+  labs(
+    x = "X",
+    y = "Y"
+  ) +
+  scale_colour_manual(name = "Funciones",
+                      values = c("Función Verdadera" = "black", 
+                                 "Estimador Guessoum-Saïd" = "#1756D5")) +
+  scale_fill_manual(name = "Intervalos",
+                    values = c("IC Teorico" = "#A26FBB")) +
+  guides(color = guide_legend(order = 1),
+         fill = guide_legend(order = 2)) +
+  theme_set(theme_bw()+ theme(legend.position = 'bottom', legend.box = "vertical")) 
+
+ggplot(res, aes(x = x)) +
+  geom_line(aes(y =     y, colour = "Función Verdadera"), linetype = "solid", size = 0.8) +
+  geom_line(aes(y =   est, colour = "Estimador Guessoum-Saïd"), linetype = "dotdash", size = 1.2) +
+  geom_ribbon(aes(ymin = ICIzq, ymax = ICDer, fill = "IC Bootstrap"), linetype = "dashed", alpha = 0.25) +
+  geom_ribbon(aes(ymin = ICIzqTeo, ymax = ICDerTeo, fill = "IC Teorico"), linetype = "dashed", alpha = 0.25) +
+  labs(
+    x = "X",
+    y = "Y"
+  ) +
+  scale_colour_manual(name = "Funciones",
+                      values = c("Función Verdadera" = "black", 
+                                 "Estimador Guessoum-Saïd" = "#1756D5")) +
+  scale_fill_manual(name = "Intervalos",
+                    values = c("IC Bootstrap" = "#8BAAEA",
+                               "IC Teorico" = "#A26FBB")) +
+  guides(color = guide_legend(order = 1),
+         fill = guide_legend(order = 2)) +
+  theme_set(theme_bw()+ theme(legend.position = 'bottom', legend.box = "vertical")) 
+
+
+
+
+
+```

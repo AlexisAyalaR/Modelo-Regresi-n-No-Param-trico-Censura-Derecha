@@ -1,0 +1,458 @@
+---
+title: "Replicación de resultados (II/II) - Tesis Alexis Ayala"
+output: html_document
+date: "Agosto 2025"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r,warning=FALSE,message=FALSE}
+# Paquetes
+
+library(reshape2)
+library(ggplot2)
+library(dplyr)
+library(xtable)
+library(tidyr)
+library(gridExtra)
+library(mice)
+library(patchwork)
+library(survival)
+library(kedd)
+library(np)
+
+```
+
+
+El objetivo del presente código es generar todos los resultados presentados en el capítulo 5 de la tésis Aplicación de un Modelo de Regresión no Paramétrico para Datos Censurados por la Derecha. Específicamente, esta tesis presenta la aplicación de la estimación de la función de regresion para covariables consierando:
+
+  - Pesos Nadaraya-Watson,
+  - Estimador de Kaplan-Meier,
+  - Datos simlados,
+  - Censura por la derecha.
+  
+  
+El presente código replica las gráficas obtenidas en el estudio realizado de la cirrosis biliar primaria, considerando los datos obtenidos por la Mayo Clinic. 
+
+Estos datos se obtuvieron de:
+https://www.kaggle.com/datasets/joebeachcapital/cirrhosis-patient-survival-prediction.
+
+Empezamos con el análsis explotatorio:
+
+```{r}
+
+# Importamos todas las funciones creadas
+source("Funciones.R")
+
+# Seed
+set.seed(1)
+
+## Importamos los datos
+# Nos colocamos en el archivo con el dataset
+setwd("~/Desktop/Tesis/data") 
+
+# Cargamos el dataset
+data <- read.csv("cirrhosis.csv")
+
+# Observamos los datos
+head(data)
+str(data)
+
+## Transformamos los datos
+# Creamos la variable de censura y droppeamos la variable Status
+data$Delta <- ifelse(data$Status == "D", 0, 1)
+data1 <- data %>% select(-Status)
+data1$Drug <- ifelse(data1$Drug == "Placebo", "Placebo", "DPen")
+
+# Checamos por NAs
+colSums(is.na(data))
+
+# Observemos los missings de la variable Drug
+head(data1[is.na(data1$Drug), ])
+
+# Se eliminan los missings de Drug
+data2 <- data1[!is.na(data1$Drug), ]
+
+# Checamos nuevamente por NAs
+colSums(is.na(data2))
+
+# Tratamos las variables categoricas con factores
+data3 <- data2
+data3$Drug <- as.factor(data3$Drug)
+data3$Sex <- as.factor(data3$Sex)
+data3$Ascites <- as.factor(data3$Ascites)
+data3$Hepatomegaly <- as.factor(data3$Hepatomegaly)
+data3$Spiders <- as.factor(data3$Spiders)
+data3$Edema <- as.factor(data3$Edema)
+
+# Borramos variables
+rm(data, data1, data2)
+
+# Checamos missings a nivel renglón
+data3$miss <- as.factor(rowSums(is.na(data3)) > 0)
+levels(data3$miss) <- c("Completo", "Missings")
+
+# Observamos correlación con la censura
+sum(rowSums(is.na(data3)) > 0 & data3$Delta == 1)
+sum(rowSums(is.na(data3)) > 0 & data3$Delta == 0)
+
+# Obsevamos correlación con la variable de interés N_Days
+ggplot(data3, aes(x = N_Days, color = miss, fill = miss)) +
+  geom_histogram(alpha = 0.4, position = "identity", binwidth = 400) +
+  scale_discrete_manual(
+    aesthetics = c("fill", "color"),
+    values = c("Completo" = "steelblue", 
+               "Missings" = "firebrick")
+  ) +
+  labs(fill = "Tipo de observación", color = "Tipo de observación")  +
+  theme_minimal()
+
+# Eliminamos la nueva columna generada
+data3 <- data3 %>% select(-miss)
+
+# Imputamos valores a partir de mice
+# Primero observamos las variables mediante gráficas
+dataImp1 <- data3 %>% select(Cholesterol, Copper, Tryglicerides, Platelets)
+
+pAnt <- lapply(1:4, function(i){
+  ggplot(dataImp1, aes(x = dataImp1[,i], fill = "Antes")) +
+    geom_histogram(alpha = 0.4, binwidth = 50, color = "#348799") + 
+    xlab(names(dataImp1)[i]) +
+    scale_fill_manual("", values = c("Antes" = "#348799", "Después" = "#994634")) +
+    theme(legend.position = "none")
+})
+
+# Realizamos la imputación
+m <- mice(data3, m = 1, method = "cart")
+
+data4 <- complete(m, 1)
+
+# Observamos nuevamente los datos
+dataImp2 <- data4 %>% select(Cholesterol, Copper, Tryglicerides, Platelets)
+
+pDesp <- lapply(1:4, function(i){
+  ggplot(dataImp2, aes(x = dataImp2[,i], fill = "Después")) +
+    geom_histogram(alpha = 0.4, binwidth = 50, color = "#994634") + 
+    xlab(names(dataImp2)[i]) +
+    scale_fill_manual("", values = c("Antes" = "#348799", "Después" = "#994634")) +
+    theme(legend.position = "none")
+})
+
+plots <- unlist(
+  mapply(function(a, b) list(a, b), pAnt, pDesp, SIMPLIFY = FALSE),
+  recursive = FALSE
+)
+
+# Imprime warnings por los missings, ignorar
+wrap_plots(plots, ncol = 2, guides = "collect") & 
+  theme(legend.position = "bottom")
+
+
+# Borramos variables que ya no usaremos
+rm(data3, dataImp1, dataImp2, m, pAnt, pDesp, plots)
+```
+
+Ahora continuamos eligiendo las variables para el modelo:
+
+```{r}
+
+# Comenzamos con la selección de variables
+# Dividimos variables discretas y continuas
+cont <- data4 %>% select(N_Days, Age, Bilirubin, Cholesterol, Albumin, Copper,
+                         Alk_Phos, SGOT, Tryglicerides, Platelets, Prothrombin,
+                         Stage, Delta)
+
+disc <- data4 %>% select(N_Days, Drug, Sex, Ascites, Hepatomegaly, 
+                         Spiders, Edema, Delta)
+
+# Primero con variables continuas
+contcorr <- cor(cont[2:13], cont[,1], method="spearman")
+
+# Seleccionamos las mayores a 0.4
+p <- contcorr[which(abs(contcorr) >= 0.4),]
+
+# Generamos un mapa de calor para estas variables
+cont2 <- cont %>% select(N_Days, Bilirubin, Albumin, Copper)
+
+contcorr2 <- cor(cont2, method="spearman")
+
+# Generamos un mapa de calor
+# Preparamos los datos
+corrM <- melt(contcorr2)
+mapping <- setNames(colnames(cont2), 1:length(colnames(cont2)))
+
+# Modificamos los datos para tener solamente el triángulo inferior
+corrPrep <- corrM %>%
+  mutate_if(is.factor, as.numeric) %>% 
+  filter(Var2 <= Var1) %>% 
+  mutate(across(starts_with("Var"), ~ mapping[.]))
+
+corrPrep$Var1 <- factor(corrPrep$Var1, levels = unique(corrPrep$Var1))
+corrPrep$Var2 <- factor(corrPrep$Var2, levels = unique(corrPrep$Var2))
+
+# Hacemos el plot
+ggplot(data = corrPrep, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() +
+  geom_text(aes(label = round(value, 2))) +
+  scale_fill_gradient2(low = "#FF69B4", high = "#87CEEB")+
+  theme(panel.background = element_blank(),
+        panel.grid = element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank()) 
+
+# Ahora las discretas
+pdisc <- sapply(names(disc)[sapply(disc[2:8], is.factor)] , function(x) {
+  survdiff(Surv(N_Days, Delta) ~ disc[[x]], data=disc)$pvalue
+})
+# Quitamos los dias de supervivencia y la censura
+pdisc <- pdisc[-c(1,7)]
+
+# Obtenemos las que tienen un p-value cercano a 5%
+vars2 <- pdisc[pdisc < 0.06] 
+
+# Borramos variables que ya no usaremos
+rm(cont, cont2, contcorr, contcorr2, p, 
+   disc, pdisc, vars2, corrPrep, corrM, mapping)
+
+# Seleccionamos las variables para el modelo
+df <- data4 %>% select(N_Days, 
+                       Delta, 
+                       Albumin, 
+                       Bilirubin, 
+                       Copper,
+                       Sex) %>%
+  arrange(N_Days)
+```
+
+Comenzamos generando los modelos:
+
+```{r}
+
+# Generamos las combinaciones
+cov <- colnames(df)[3:6]
+
+# Indicador de continuas
+varCont <- sapply(df, is.numeric)
+
+comb <- unlist(
+  lapply(1:length(cov), function(m) {
+    lapply(combn(cov, m, simplify = FALSE), function(combo) {
+      list(
+        continuas = combo[varCont[combo]],
+        categoricas = combo[!varCont[combo]]
+      )
+    })
+  }),
+  recursive = FALSE
+)
+
+# Generamos variable para facilitar las gráficas
+df$Delta1 <- factor(df$Delta , labels = c("Observado", "Censurado"))
+
+# Empezamos estimaciones individuales para graficas
+# Definimos colores
+colores <- c("#40358f", "#8f4035", "#35848f", "#8f3584")
+
+plots <- vector("list", 4)
+
+# Generamos las continuas primero
+for (k in 3:5) {
+  
+  # Obtenemos el eje X
+  vMin <- min(df[k])
+  vMax <- max(df[k])
+  x <- seq(vMin, vMax, (vMax - vMin)/1000 )
+  XCont <- as.matrix(df[k])
+  
+  # Definimos ancho de banda
+  bw <- h.ucv(XCont[,1], kernel = "gaussian")$h
+  
+  # Estimamos
+  est <- sapply(x, function(j) {
+    guessoumExt(j, NA, XCont, NA, df$N_Days, df$Delta, bw)
+  })
+  
+  est <- data.frame(x <- x,
+                    f <- est)
+
+  # Graficamos
+  p <- ggplot() +
+    geom_line(data = est, aes(x = x, y = f, linetype = "Estimador Guessoum-Saïd"), color = colores[k-2], linewidth = 1) +
+    geom_point(data = df, aes(x = .data[[cov[k-2]]], y = N_Days, color = Delta1, shape = Delta1), size = 1) +
+    labs(x = cov[k-2],
+         y = "N_Days",
+         color = "Datos",
+         shape = "Datos") +
+    scale_shape_manual(name = "Datos", values = c("Censurado" = 1, "Observado" = 4)) +
+    scale_color_manual(name = "Datos", values = c("Censurado" = "#e53265", "Observado" = "#3265e5")) +
+    scale_linetype_manual(name = "Funciones",  values = c("Estimador Guessoum-Saïd" = "solid")) +
+    theme_bw() +
+    theme(legend.position = "bottom", legend.box = "vertical", legend.box.just = "center") 
+  
+  print(p)
+  
+  plots[[k-2]] <- ggplotGrob(p)
+  
+}
+
+# Generamos para la variable Sex
+XCat <- as.matrix(df$Sex)
+x <- c("F", "M")
+
+# Estimamos
+est <- sapply(x, function(j) {
+  guessoumExt(NA, j, NA, XCat, df$N_Days, df$Delta, bw)
+})
+
+est <- data.frame(x <- x,
+                  f <- est)
+
+# Generamos el plot
+p <- ggplot() +
+  geom_point(data = df, aes(x = Sex, y = N_Days, color = Delta1, shape = Delta1), size = 2, position = position_jitter(width = 0.2)) +
+  geom_point(data = est, aes(x = x, y = f, fill = "Estimador Guessoum-Saïd"), color = colores[4], size = 4, shape = 23) +
+  scale_shape_manual(name = "Datos", values = c("Censurado" = 1, "Observado" = 4)) +
+  scale_color_manual(name = "Datos", values = c("Censurado" = "#e53265", "Observado" = "#3265e5")) +
+  scale_fill_manual(name = "Funciones",  values = c("Estimador Guessoum-Saïd" = colores[4])) +
+  theme_minimal() +
+  labs(x = "Sex",
+       y = "N_Days",
+       color = "Datos",
+       shape = "Datos") +
+  scale_x_discrete(labels = c("F" = "Female", "M" = "Male")) +
+  theme_bw() +
+  theme(legend.position = "bottom", legend.box = "vertical", legend.box.just = "center") 
+
+print(p)
+
+# Iniciamos variable para guardar resultados
+res <- vector("list", length(comb))
+
+# Generamos las estimaciones
+for (i in 1:length(comb) ) {
+  
+  # Reseteamos todo
+  XCont <- NA
+  XCat <- NA
+  bw <- NA
+  cont <- FALSE
+  cat <- FALSE
+  
+  # Checamos si hay variables continuas
+  if(length(comb[[i]]$continuas) != 0){
+    XCont <- as.matrix(df[comb[[i]]$continuas])
+    
+    # Estimamos anchos de banda para las variables
+    # Suprimimos Warnings porque genera mucho texto en la consola
+    sink(tempfile())
+      bw <- npudensbw(dat = XCont, bwmethod = "cv.ls", ckertype = "gaussian")
+    sink()  
+    bw <- bw$bw
+     
+    # Bandera
+    cont <- TRUE
+  }
+  
+  # Checamos si hay variables categoricas
+  if(length(comb[[i]]$categoricas) != 0){
+    XCat <- as.matrix(df[comb[[i]]$categoricas])
+    
+    # Bandera
+    cat <- TRUE
+  }
+  
+  # Estimamos Guessoum-Said
+  # Aplicamos el estimador a todos los puntos observados 
+  
+  # Checamos banderas
+  if( (cont == TRUE) && (cat == TRUE ) ){
+    
+    # Tenemos continuas y discretas
+    est <- sapply(seq_along(df$N_Days), function(j) {
+      guessoumExt(XCont[j,], XCat[j,], XCont, XCat, df$N_Days, df$Delta, bw)
+    })
+  }else{
+    if(cont == TRUE){
+      
+      # Tenemos solo continuas
+      est <- sapply(seq_along(df$N_Days), function(j) {
+        guessoumExt(XCont[j,], NA, XCont, NA, df$N_Days, df$Delta, bw)
+      })
+    }else{
+      
+      # Tenemos solo discretas
+      est <- sapply(seq_along(df$N_Days), function(j) {
+        guessoumExt(NA, XCat[j,], NA, XCat, df$N_Days, df$Delta, bw)
+      })
+    }
+  }
+  
+  # Calculamos el error
+  error <- miseIPCW(est, df$N_Days, df$Delta)
+  
+  # Guardamos los datos
+  res[[i]] <- list(
+    vars  = comb[[i]],
+    error = error
+  )
+  
+}
+
+
+# Buscamos el error más pequeño
+mejorComb <- which.min(sapply(res, function(x) 
+  x$error
+))
+
+res[[mejorComb]]
+
+
+```
+
+Finalmente terminamos generando el último modelo considerando intervalos de confianza:
+
+```{r}
+
+# Estimamos con intervalos de confianza considerando Albumin
+# Obtenemos el eje X
+vMin <- min(XCont[,1])
+vMax <- max(XCont[,1])
+x <- seq(vMin, vMax, (vMax - vMin)/500 )
+X <- as.matrix(XCont[,1])
+T <- as.matrix(df$N_Days)
+
+# Definimos ancho de banda
+bw <- h.ucv(XCont[,1], kernel = "gaussian")$h
+
+IC <- lapply(x, function(x) {
+  bootstrapCI(x, X, T, df$Delta, bw, 100)
+})
+
+IC <- do.call(rbind, IC)
+
+# Guardamos los datos
+est <- data.frame(x = x,
+                  f = IC$Est,
+                  ICIzq = stats::loess(IC$Low ~ x, span = 0.3)$fitted,
+                  ICDer = stats::loess(IC$Up ~ x, span = 0.3)$fitted
+)
+
+ggplot() +
+  geom_line(data = est, aes(x = x, y = f, linetype = "Estimador Guessoum-Saïd"), color = colores[1], linewidth = 1) +
+  geom_point(data = df, aes(x = .data[[cov[1]]], y = N_Days, color = Delta1, shape = Delta1), size = 2, alpha = 0.5) +
+  geom_ribbon(data = est, aes(x = x, ymin = ICIzq, ymax = ICDer, fill = "Intervalo de confianza"), colour = NA, show.legend = FALSE, linetype = "dashed", alpha = 0.25, na.rm = TRUE) +
+  labs(x = cov[1],
+       y = "N_Days",
+       color = "Datos",
+       shape = "Datos") +
+  scale_shape_manual(name = "Datos", values = c("Censurado" = 1, "Observado" = 4)) +
+  scale_color_manual(name = "Datos", values = c("Censurado" = "#e53265", "Observado" = "#3265e5")) +
+  scale_linetype_manual(name = "Funciones",  values = c("Estimador Guessoum-Saïd" = "solid")) +
+  scale_fill_manual(name = "",
+                    values = c("Intervalo de confianza" = colores[1]),
+                    guide  = guide_legend(override.aes = list(linetype = 0, alpha    = 0.25))) +
+  theme_bw() +
+  theme(legend.position = "bottom", legend.box = "vertical", legend.box.just = "center") 
+```
