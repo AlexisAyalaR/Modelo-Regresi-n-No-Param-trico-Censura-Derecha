@@ -361,6 +361,7 @@ donde, $W$ es la función de pesos de Nadaraya-Watson y $\bar{G_n}$ es el estima
 
 ```{r}
 
+# Creamos estimación considerando diferentes tamaños de muestra n = 50, 100 & 500
 linea <- function(x) { 
   2*x - 1 
 }
@@ -390,6 +391,52 @@ ggplot(dn1, aes(x = x)) +
   scale_x_continuous(limits = c(0,1)) +
   scale_y_continuous(limits = c(-1,1)) +
   theme_set(theme_bw()+ theme(legend.position = 'bottom')) 
+
+
+# Replicamos estimación pero ahora con intervalos al 95%
+
+b1 <- aplicacionGuessoumBoot(50, linea, 0.2)
+b2 <- aplicacionGuessoumBoot(100, linea, 0.2)
+b3 <- aplicacionGuessoumBoot(500, linea, 0.2)
+
+data <- data.frame("x" <- b1$x,
+                   "y" <- b1$y,
+                   "Est1" <- b1$Est,
+                   "Est2" <- b2$Est,
+                   "Est3" <- b3$Est,
+                   "Low1" <- stats::loess(b1$Low ~ b1$x, span = 0.3)$fitted,
+                   "Low2" <- stats::loess(b2$Low ~ b2$x, span = 0.3)$fitted,
+                   "Low3" <- stats::loess(b3$Low ~ b3$x, span = 0.3)$fitted,
+                   "Up1" <- stats::loess(b1$Up ~ b1$x, span = 0.3)$fitted,
+                   "Up2" <- stats::loess(b2$Up ~ b2$x, span = 0.3)$fitted,
+                   "Up3" <- stats::loess(b3$Up ~ b3$x, span = 0.3)$fitted
+)
+
+ggplot(b1, aes(x = x)) +
+  geom_line(aes(y =    y, colour = "Función Verdadera"), linetype = "solid", linewidth = 0.8, alpha = 0.7) +
+  geom_line(aes(y = Est1, colour = "n = 50"), linetype = "dotted", linewidth = 1.2) +
+  geom_line(aes(y = Est2, colour = "n = 100"), linetype = "dashed", linewidth = 1.2) +
+  geom_line(aes(y = Est3, colour = "n = 500"), linetype = "dotdash", linewidth = 1.2) +
+  geom_ribbon(aes(ymin = Low1, ymax = Up1, fill = "n = 50"), linetype = "dashed", alpha = 0.2) +
+  geom_ribbon(aes(ymin = Low2, ymax = Up2, fill = "n = 100"), linetype = "dashed", alpha = 0.2) +
+  geom_ribbon(aes(ymin = Low3, ymax = Up3, fill = "n = 500"), linetype = "dashed", alpha = 0.2) +
+  labs(
+    x = "X",
+    y = "Y"
+  ) +
+  scale_colour_manual(name = "Funciones",
+                      values = c("Función Verdadera" = "black", 
+                                 "n = 50" = "#1756D5", 
+                                 "n = 100" = "#9483C1", 
+                                 "n = 500" = "#6aa84f")) +
+  scale_fill_manual(name = "Intervalos",
+                      values = c("n = 50" = "#1756D5", 
+                                 "n = 100" = "#9483C1", 
+                                 "n = 500" = "#6aa84f")) +
+  scale_x_continuous(limits = c(0,1)) +
+  scale_y_continuous(limits = c(-1.2,1.7)) +
+  theme_bw() +
+  theme(legend.position = "bottom", legend.box = "vertical", legend.box.just = "center") 
 
 
 # Veamos la censura en n = 100 y n = 500
