@@ -468,5 +468,33 @@ bootstrapCI = function(x0, X, t, d, h, B){
   return(res)
 }
 
+# Función que genera estimación considerando CI Bootstrap
+aplicacionGuessoumBoot = function(n, funcion, b){
+  
+  set.seed(1)
+  #Generamos los datos
+  X <- matrix(runif(n, min = 0, max = 1))
+  e <- rnorm(n)
+  Y <- funcion(X) + b * e
+  C <- rnorm(n)
+  T <- pmin(Y, C)
+  delta <- as.numeric(Y <= C)
+  h <- h.ucv(X[,1], kernel = "gaussian")$h
+  
+  # Definimos eje
+  x0 <- seq(0, 1, length.out = 500)
+  
+  # Generamos los intervalos
+  IC <- lapply(x0, function(x0) {
+    bootstrapCI(x0, X, T, delta, h, 30)
+  })
+  
+  # Guardamos los datos
+  res <- do.call(rbind, IC)
+  res$x <- x0
+  res$y <- funcion(x0)
+  
+  return(res)
+}
 
 
