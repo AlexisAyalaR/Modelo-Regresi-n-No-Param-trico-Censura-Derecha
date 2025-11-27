@@ -22,6 +22,7 @@ library(patchwork)
 library(survival)
 library(kedd)
 library(np)
+library(survminer)
 
 ```
 
@@ -411,7 +412,7 @@ res[[mejorComb]]
 
 ```
 
-Finalmente terminamos generando el último modelo considerando intervalos de confianza:
+Generamos el último modelo considerando intervalos de confianza:
 
 ```{r}
 
@@ -456,3 +457,28 @@ ggplot() +
   theme_bw() +
   theme(legend.position = "bottom", legend.box = "vertical", legend.box.just = "center") 
 ```
+
+Finalmente intentamos aplicar el modelo de riesgos proporcionales de Cox:
+
+```{r}
+
+# Constriumos los modelos univariados de cox
+fit1 <- coxph(Surv(T, df$Delta) ~ XCont[,1])
+fit2 <- coxph(Surv(T, df$Delta) ~ XCont[,2])
+fit3 <- coxph(Surv(T, df$Delta) ~ XCont[,3])
+fit4 <- coxph(Surv(T, df$Delta) ~ XCat)
+
+# Verificamos el supuesto de riesgos proporcionales
+cox.zph(fit1, transform = "km") 
+cox.zph(fit2, transform = "km") 
+cox.zph(fit3, transform = "km") 
+cox.zph(fit4, transform = "km") 
+
+# Constriumos los modelo multivariado de cox
+fitM <- coxph(Surv(T, df$Delta) ~ XCont[,1] + XCont[,2] + XCont[,3] + XCat)
+cox.zph(fitM, transform = "km") 
+
+
+
+```
+
